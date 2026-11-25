@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PONG 8-BIT</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#1b1035; --ink:#ffd23f; --p1:#3ee6d0; --p2:#ff4f8b; --dim:#6b5a9e; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Press Start 2P", "Courier New", monospace;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 12px; user-select: none; -webkit-user-select: none;
+  }
+  h1 { font-size: clamp(14px, 3.4vw, 22px); margin: 0; letter-spacing: 2px; }
+  .frame { border: 6px solid var(--dim); padding: 6px; width: min(100%, 720px); background: #0e0722; }
+  canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; touch-action: none; }
+  .help { font-size: clamp(7px, 1.6vw, 10px); line-height: 1.8; color: var(--dim); text-align: center; max-width: 720px; }
+  .help b { color: var(--p1); font-weight: normal; } .help i { color: var(--p2); font-style: normal; }
+</style>
+</head>
+<body>
+<h1>PONG 8-BIT</h1>
+<div class="frame"><canvas id="c" width="320" height="200"></canvas></div>
+<div class="help">
+  <b>P1</b>: W / S &nbsp; <i>P2</i>: ↑ / ↓ &nbsp; SPASI: jeda &nbsp; ESC: menu<br>
+  Di ponsel: geser jari di sisi kiri / kanan layar
+</div>
+
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height, PW = 4, PH = 32, BS = 5, WIN = 7;
+const COL = { bg:'#0e0722', p1:'#3ee6d0', p2:'#ff4f8b', ink:'#ffd23f', dim:'#6b5a9e' };
+const FONT = '"Press Start 2P", "Courier New", monospace';
+
+let state = 'menu', mode = 1, blink = 0, shake = 0;
+let p1, p2, ball, score, serveDir = 1, flash = 0;
+const keys = {};
+const touch = { l: null, r: null };
+
+// ---------- Sound (square-wave beeps) ----------
+let ac;
+function beep(freq, dur = 0.07, type = 'square', vol = 0.05) {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.value = freq; g.gain.value = vol;
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    o.connect(g); g.connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
+  } catch (e) {}
+}
+
+// ---------- Game setup ----------
+function resetBall(dir) {
+  const a = (Math.random() - 0.5) * 0.9;
+  ball = { x: W / 2, y: H / 2, vx: Math.cos(a) * 2 * dir, vy: Math.sin(a) * 2, speed: 2, wait: 60 };
+}
+function startGame(m) {
+  mode = m; score = [0, 0];
+  p1 = { x: 12, y: H / 2 - PH / 2 }; p2 = { x: W - 12 - PW, y: H / 2 - PH / 2 };
+  serveDir = Math.random() < 0.5 ? 1 : -1; resetBall(serveDir);
+  state = 'play'; beep(660, 0.1);
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function update() {
+  blink++;
+  if (shake > 0) shake--;
+  if (flash > 0) flash--;
+  if (state !== 'play') return;
+
+  const sp = 3;
+  // Player 1: W/S (and arrows in 1-player mode), or touch
+  let d1 = (keys.s ? 1 : 0) - (keys.w ? 1 : 0);
+  if (mode === 1) d1 += (keys.ArrowDown ? 1 : 0) - (keys.ArrowUp ? 1 : 0);
+  p1.y += clamp(d1, -1, 1) * sp;
+  if (touch.l !== null) p1.y += clamp(touch.l - PH / 2 - p1.y, -sp, sp);
+
+  if (mode === 2) {
+    const d2 = (keys.ArrowDown ? 1 : 0) - (keys.ArrowUp ? 1 : 0);
+    p2.y += d2 * sp;
+    if (touch.r !== null) p2.y += clamp(touch.r - PH / 2 - p2.y, -sp, sp);
+  } else {
+    // CPU: follows the ball with a lag and a dead zone, so it can be beaten
+    const target = ball.vx > 0 ? ball.y : H / 2;
+    const c = p2.y + PH / 2, lim = 2.1;
+    if (Math.abs(target - c) > 6) p2.y += clamp(target - c, -lim, lim);
+  }
+  p1.y = clamp(p1.y, 4, H - PH - 4); p2.y = clamp(p2.y, 4, H - PH - 4);
+
+  if (ball.wait > 0) { ball.wait--; return; }
+  ball.x += ball.vx; ball.y += ball.vy;
+
+  if (ball.y <= 4 || ball.y + BS >= H - 4) {
+    ball.y = clamp(ball.y, 4, H - 4 - BS); ball.vy *= -1; beep(220, 0.05);
+  }
+  // Paddle collisions
+  for (const [p, dir] of [[p1, 1], [p2, -1]]) {
+    const hit = ball.x < p.x + PW && ball.x + BS > p.x && ball.y + BS > p.y && ball.y < p.y + PH;
+    if (hit && Math.sign(ball.vx) === -dir) {
+      const off = (ball.y + BS / 2 - (p.y + PH / 2)) / (PH / 2);
+      ball.speed = Math.min(ball.speed + 0.25, 6);
+      const ang = off * 0.95;
+      ball.vx = Math.cos(ang) * ball.speed * dir; ball.vy = Math.sin(ang) * ball.speed;
+      ball.x = dir === 1 ? p.x + PW : p.x - BS;
+      beep(440 + ball.speed * 40, 0.06); shake = 3;
+    }
+  }
+  // Scoring
+  if (ball.x + BS < 0 || ball.x > W) {
+    const who = ball.x > W ? 0 : 1;
+    score[who]++; flash = 12; shake = 10; beep(120, 0.3, 'sawtooth');
+    if (score[who] >= WIN) { state = 'over'; beep(880, 0.4); return; }
+    resetBall(who === 0 ? -1 : 1);
+  }
+}
+
+// ---------- Drawing ----------
+function text(str, x, y, size, color, align = 'center') {
+  ctx.font = size + 'px ' + FONT; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'top';
+  ctx.fillText(str, x, y);
+}
+function draw() {
+  ctx.save();
+  ctx.fillStyle = flash > 6 ? '#2a1850' : COL.bg; ctx.fillRect(0, 0, W, H);
+  if (shake > 0) ctx.translate((Math.random() - 0.5) * 3, (Math.random() - 0.5) * 3);
+
+  // borders and dashed net
+  ctx.fillStyle = COL.dim; ctx.fillRect(0, 0, W, 4); ctx.fillRect(0, H - 4, W, 4);
+  for (let y = 8; y < H - 8; y += 12) ctx.fillRect(W / 2 - 1, y, 2, 6);
+
+  if (state === 'menu') {
+    text('PONG', W / 2, 38, 30, COL.ink);
+    text('8-BIT', W / 2, 76, 12, COL.p2);
+    text('[1]  1 PEMAIN  vs  CPU', W / 2, 114, 8, COL.p1);
+    text('[2]  2 PEMAIN', W / 2, 132, 8, COL.p1);
+    if (Math.floor(blink / 30) % 2 === 0) text('TEKAN 1 ATAU 2', W / 2, 166, 7, COL.ink);
+    ctx.restore(); return;
+  }
+
+  // scores
+  text(String(score[0]), W / 2 - 40, 16, 22, COL.p1);
+  text(String(score[1]), W / 2 + 40, 16, 22, COL.p2);
+
+  // paddles and ball
+  ctx.fillStyle = COL.p1; ctx.fillRect(Math.round(p1.x), Math.round(p1.y), PW, PH);
+  ctx.fillStyle = COL.p2; ctx.fillRect(Math.round(p2.x), Math.round(p2.y), PW, PH);
+  ctx.fillStyle = COL.ink; ctx.fillRect(Math.round(ball.x), Math.round(ball.y), BS, BS);
+
+  if (state === 'play' && ball.wait > 0 && Math.floor(blink / 10) % 2 === 0)
+    text('SIAP!', W / 2, H - 30, 8, COL.ink);
+
+  if (state === 'pause' || state === 'over') {
+    ctx.fillStyle = 'rgba(14,7,34,.78)'; ctx.fillRect(0, 60, W, 80);
+    if (state === 'pause') {
+      text('JEDA', W / 2, 78, 16, COL.ink);
+      text('SPASI UNTUK LANJUT', W / 2, 108, 7, COL.p1);
+    } else {
+      const left = score[0] > score[1];
+      const name = mode === 1 ? (left ? 'KAMU MENANG!' : 'CPU MENANG') : (left ? 'P1 MENANG!' : 'P2 MENANG!');
+      text(name, W / 2, 76, 14, left ? COL.p1 : COL.p2);
+      if (Math.floor(blink / 30) % 2 === 0) text('SPASI = MAIN LAGI   ESC = MENU', W / 2, 108, 6, COL.ink);
+    }
+  }
+  ctx.restore();
+}
+
+// ---------- Input ----------
+addEventListener('keydown', e => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  keys[k] = true;
+  if (['ArrowUp', 'ArrowDown', ' '].includes(e.key)) e.preventDefault();
+  if (state === 'menu') { if (k === '1') startGame(1); if (k === '2') startGame(2); }
+  else if (k === ' ') {
+    if (state === 'play') state = 'pause';
+    else if (state === 'pause') state = 'play';
+    else if (state === 'over') startGame(mode);
+  }
+  if (k === 'Escape') state = 'menu';
+});
+addEventListener('keyup', e => { keys[e.key.length === 1 ? e.key.toLowerCase() : e.key] = false; });
+
+function pos(t) {
+  const r = cv.getBoundingClientRect();
+  return { x: (t.clientX - r.left) / r.width * W, y: (t.clientY - r.top) / r.height * H };
+}
+function handleTouch(e) {
+  e.preventDefault();
+  touch.l = touch.r = null;
+  for (const t of e.touches) {
+    const p = pos(t);
+    if (p.x < W / 2) touch.l = p.y; else touch.r = p.y;
+  }
+}
+cv.addEventListener('touchstart', e => {
+  if (state === 'menu') {
+    const p = pos(e.touches[0]); startGame(p.y > 123 ? 2 : 1); e.preventDefault(); return;
+  }
+  if (state === 'over') { startGame(mode); e.preventDefault(); return; }
+  if (state === 'pause') { state = 'play'; e.preventDefault(); return; }
+  handleTouch(e);
+}, { passive: false });
+cv.addEventListener('touchmove', handleTouch, { passive: false });
+cv.addEventListener('touchend', handleTouch, { passive: false });
+
+// ---------- Fixed-timestep loop (60 updates/s) ----------
+let last = 0, acc = 0;
+function loop(t) {
+  acc += Math.min(t - last, 100); last = t;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+(document.fonts ? document.fonts.load('10px "Press Start 2P"') : Promise.resolve())
+  .catch(() => {}).finally(() => requestAnimationFrame(loop));
+</script>
+</body>
+</html>
